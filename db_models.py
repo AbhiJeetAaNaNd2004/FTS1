@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, Text, ForeignKey, LargeBinary, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, Text, ForeignKey, LargeBinary, JSON, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import ARRAY
 from db_config import Base
 import datetime
 class Employee(Base):
@@ -76,6 +77,63 @@ class SystemLog(Base):
     camera_id = Column(Integer)
     timestamp = Column(DateTime, default=func.now())
     additional_data = Column(JSON)
+# New models according to specification
+class Face(Base):
+    __tablename__ = 'faces'
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(String, ForeignKey('users.employee_id'), nullable=False, index=True)
+    image_path = Column(String, nullable=False)
+    embedding_vector = Column(ARRAY(Float), nullable=False)  # PostgreSQL array for embeddings
+    quality_score = Column(Float)
+    created_at = Column(DateTime, default=func.now())
+    
+    # Relationships
+    user = relationship("User", back_populates="faces")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_faces_employee_id', 'employee_id'),
+        Index('idx_faces_created_at', 'created_at'),
+    )
+
+class Log(Base):
+    __tablename__ = 'logs'
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(String, ForeignKey('users.employee_id'), nullable=False, index=True)
+    timestamp = Column(DateTime, default=func.now(), index=True)
+    event_type = Column(String, nullable=False)  # check-in, check-out
+    camera_id = Column(Integer, ForeignKey('cameras.id'), nullable=False)
+    confidence_score = Column(Float)
+    metadata = Column(JSON)  # Additional event data
+    
+    # Relationships
+    user = relationship("User", back_populates="logs")
+    camera = relationship("Camera", back_populates="logs")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_logs_employee_id_timestamp', 'employee_id', 'timestamp'),
+        Index('idx_logs_timestamp', 'timestamp'),
+        Index('idx_logs_event_type', 'event_type'),
+    )
+
+class Camera(Base):
+    __tablename__ = 'cameras'
+    id = Column(Integer, primary_key=True, index=True)
+    location = Column(String, nullable=False)
+    stream_url = Column(String)
+    camera_type = Column(String, default='entry')  # entry, exit, monitoring
+    resolution_width = Column(Integer, default=1920)
+    resolution_height = Column(Integer, default=1080)
+    fps = Column(Integer, default=30)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    logs = relationship("Log", back_populates="camera")
+
+# Keep the existing Role model for backward compatibility but update it
 class Role(Base):
     __tablename__ = 'roles'
     id = Column(Integer, primary_key=True, index=True)
@@ -83,15 +141,21 @@ class Role(Base):
     permissions = Column(JSON)  # Flexible permissions storage as JSON
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    users = relationship("User", back_populates="role")
 class User(Base):
     __tablename__ = 'users'
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, nullable=False)
+    employee_id = Column(String, primary_key=True, index=True)  # Using employee_id as primary key
+    name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
-    status = Column(String, default='active')  # active, inactive, suspended
+    role = Column(String, nullable=False, default='employee')  # employee, admin, super_admin
+    email = Column(String, unique=True)
+    department = Column(String)
+    designation = Column(String)
+    phone = Column(String)
+    is_active = Column(Boolean, default=True)
     last_login_time = Column(DateTime)
-    role_id = Column(Integer, ForeignKey('roles.id'))
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    role = relationship("Role", back_populates="users")
+    
+    # Relationships
+    faces = relationship("Face", back_populates="user")
+    logs = relationship("Log", back_populates="user")
