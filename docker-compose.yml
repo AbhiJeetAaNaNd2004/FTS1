@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: face_recognition_db
+    environment:
+      POSTGRES_DB: face_tracking
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - face_recognition_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for caching and background tasks
+  redis:
+    image: redis:7-alpine
+    container_name: face_recognition_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - face_recognition_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: face_recognition_backend
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: face_tracking
+      DB_USER: postgres
+      DB_PASSWORD: password
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      
+      # JWT
+      JWT_SECRET_KEY: your-super-secret-jwt-key-change-this-in-production-environment
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: 7
+      
+      # Face Recognition
+      KNOWN_FACES_DIR: /app/known_faces
+      FACE_DETECTION_THRESHOLD: 0.5
+      FACE_MATCH_THRESHOLD: 0.6
+      EMBEDDING_MODEL: antelopev2
+      
+      # File Storage
+      UPLOAD_DIR: /app/uploads
+      MAX_FILE_SIZE: 10485760
+      
+      # Server
+      HOST: 0.0.0.0
+      PORT: 8000
+      DEBUG: false
+      WORKERS: 4
+      
+      # Logging
+      LOG_LEVEL: INFO
+      LOG_FILE: /app/logs/app.log
+      
+      # CORS
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost,http://127.0.0.1
+      ALLOWED_METHODS: GET,POST,PUT,DELETE,OPTIONS
+      ALLOWED_HEADERS: "*"
+      
+      # Rate Limiting
+      RATE_LIMIT_PER_MINUTE: 60
+      RATE_LIMIT_BURST: 10
+    volumes:
+      - ./backend/known_faces:/app/known_faces
+      - ./backend/uploads:/app/uploads
+      - ./backend/logs:/app/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - face_recognition_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: face_recognition_frontend
+    environment:
+      REACT_APP_API_URL: http://localhost/api
+    ports:
+      - "3000:80"
+    networks:
+      - face_recognition_network
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: face_recognition_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    networks:
+      - face_recognition_network
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  face_recognition_network:
+    driver: bridge
